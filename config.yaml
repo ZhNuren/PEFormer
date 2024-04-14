@@ -1,0 +1,11 @@
+BATCH_SIZE: 32
+LEARNING_RATE: 1e-4
+MIN_LR: 1e-6
+NUM_EPOCHS: 50
+LEARNING_SCHEDULER: 'CosineAnnealingLR'
+LOSS: 'BCEWithLogitsLoss'
+SAVE_DIR: "/home/nuren.zhaksylyk/Documents/HC701/project/PEFormer/runs"
+
+CT_PK: "/home/kamila.zhumakhanova/Desktop/2_sem/hc_lab/project/data_nuren/all_ct_out_embeds.pickle"
+EHR_PK: "/home/kamila.zhumakhanova/Desktop/2_sem/hc_lab/project/data_nuren/all_emr_embs.pickle"
+CSV: "/home/kamila.zhumakhanova/Desktop/2_sem/hc_lab/project/data_nuren/all_ct_labels_split.csv"
