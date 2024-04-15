@@ -12,6 +12,7 @@ import time
 import yaml
 import wandb
 import json
+import pytorch_warmup as warmup
 
 
 config = yaml.load(open("config.yaml", 'r'), Loader=yaml.FullLoader)
@@ -112,6 +113,9 @@ def train_step(
         loss_fn: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
+        lr_scheduler: torch.optim.lr_scheduler,
+        warmup_scheduler: warmup.LinearWarmup,
+        warmup_period: int,
 ):
     """
     Train model for one epoch.
@@ -144,6 +148,10 @@ def train_step(
         loss = loss_fn(output, target)
         loss.backward()
         optimizer.step()
+
+        with warmup_scheduler.dampening():
+            if warmup_scheduler.last_step + 1 >= warmup_period:
+                lr_scheduler.step()
 
         train_loss += loss.item()
 
@@ -217,6 +225,8 @@ def trainer(
         loss_fn: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: torch.optim.lr_scheduler,
+        warmup_scheduler: warmup.LinearWarmup,
+        warmup_period: int,
         lr_scheduler_name: str,
         device: torch.device,
         epochs: int,
@@ -256,7 +266,7 @@ def trainer(
     for epoch in range(start_epoch, epochs + 1):
 
         print(f"Epoch {epoch}:")
-        train_loss, train_acc, train_macro_f1, train_macro_recall = train_step(model, train_loader, loss_fn, optimizer, device)
+        train_loss, train_acc, train_macro_f1, train_macro_recall = train_step(model, train_loader, loss_fn, optimizer, device, lr_scheduler, warmup_scheduler, warmup_period)
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Train F1: {train_macro_f1:.4f}, Train recall: {train_macro_recall:.4f}")
 
         
@@ -271,10 +281,10 @@ def trainer(
         print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}, Val recall: {val_recall:.4f}")
         print()
 
-        if lr_scheduler_name == "ReduceLROnPlateau":
-            lr_scheduler.step(val_loss)
-        elif lr_scheduler_name != "None":
-            lr_scheduler.step()
+        # if lr_scheduler_name == "ReduceLROnPlateau":
+        #     lr_scheduler.step(val_loss)
+        # elif lr_scheduler_name != "None":
+        #     lr_scheduler.step()
         
         results["val_loss"].append(val_loss)
         results["val_acc"].append(val_acc)
@@ -322,7 +332,7 @@ LEARNING_SCHEDULER = config["LEARNING_SCHEDULER"]
 LOSS = config["LOSS"]
 SAVE_DIR = config["SAVE_DIR"]
 MIN_LR = float(config["MIN_LR"])
-
+WARMUP_EPOCH = int(config["WARMUP_EPOCH"])
 DEVICE = torch.device(f"cuda:0" if torch.cuda.is_available() else 'cpu')
 
 print(f"Using {DEVICE} device")
@@ -368,8 +378,12 @@ elif LOSS == "BCEWithLogitsLoss":
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
+warmup_period = WARMUP_EPOCH * len(train_loader)
+
+num_steps = len(train_loader) * NUM_EPOCHS - warmup_period
+
 if LEARNING_SCHEDULER == "CosineAnnealingLR":
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, verbose=True, eta_min=MIN_LR)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, verbose=False, eta_min=MIN_LR)
 elif LEARNING_SCHEDULER == "ReduceLROnPlateau":
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 elif LEARNING_SCHEDULER == "StepLR":
@@ -379,6 +393,7 @@ elif LEARNING_SCHEDULER == "MultiStepLR":
 else:
     lr_scheduler = None
 
+warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period)
 
 results = trainer(
         model=model,
@@ -387,6 +402,8 @@ results = trainer(
         loss_fn=loss,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
+        warmup_scheduler=warmup_scheduler,
+        warmup_period=warmup_period,
         lr_scheduler_name=LEARNING_SCHEDULER,
         device=DEVICE,
         epochs=NUM_EPOCHS,
