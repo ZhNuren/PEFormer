@@ -1,4 +1,4 @@
-from radfusion import RadFusionCT
+from radfusion2 import RadFusionCT, TransformCompose, RandomFlip, RandomShuffle
 import torch
 from torch import nn
 from tqdm import tqdm
@@ -13,6 +13,7 @@ import yaml
 import wandb
 import json
 import pytorch_warmup as warmup
+from torch.nn import functional as F
 
 
 config = yaml.load(open("config.yaml", 'r'), Loader=yaml.FullLoader)
@@ -79,16 +80,16 @@ class PEFormer(nn.Module):
                  num_heads = 2,
                  num_enc_layer = 1,
                  num_classes = 1,
-                 dim_feedforward = 512):
+                 dim_feedforward = 128):
         super(PEFormer, self).__init__()
 
         self.positional_encoder = AbsolutePositionalEncoder(emb_dim, max_position=max_num_emb+1)
 
         self.cl_token = nn.Parameter(torch.randn(1, emb_dim))
 
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dim, nhead=num_heads, dim_feedforward=dim_feedforward, batch_first=True)
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dim, nhead=num_heads, dim_feedforward=dim_feedforward, batch_first=True, dropout=0.7)
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_enc_layer)
-
+        self.dropout_layer = nn.Dropout(p=0.5)
         self.fc = nn.Linear(emb_dim, num_classes)
     
     def forward(self, x, mask):
@@ -103,6 +104,7 @@ class PEFormer(nn.Module):
 
         x = self.transformer(x, src_key_padding_mask = mask)
 
+        x = self.dropout_layer(x)
         x = self.fc(x[:, 0, :])
 
         return x
@@ -412,7 +414,12 @@ all_emr_embs = config["EHR_PK"]
 labels_csv = config["CSV"]
 
 
-dataset_train = RadFusionCT(pkl_ct_file=all_ct_embs, pkl_emr_file=all_emr_embs, csv_file=labels_csv, split='train')
+train_transforms = TransformCompose([
+    RandomFlip(p=0.5),
+    RandomShuffle(p=0.5)
+])
+
+dataset_train = RadFusionCT(pkl_ct_file=all_ct_embs, pkl_emr_file=all_emr_embs, csv_file=labels_csv, split='train', transform=train_transforms)
 dataset_val = RadFusionCT(pkl_ct_file=all_ct_embs, pkl_emr_file=all_emr_embs, csv_file=labels_csv, split='val')
 dataset_test = RadFusionCT(pkl_ct_file=all_ct_embs, pkl_emr_file=all_emr_embs, csv_file=labels_csv, split='test')
 
