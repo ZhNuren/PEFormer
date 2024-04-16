@@ -1,12 +1,13 @@
 BATCH_SIZE: 64
 WARMUP_EPOCH: 5
-LEARNING_RATE: 5e-3
-MIN_LR: 1e-4
+LEARNING_RATE: 1e-4
+MIN_LR: 1e-5
 NUM_EPOCHS: 100
 LEARNING_SCHEDULER: 'CosineAnnealingLR'
 LOSS: 'BCEWithLogitsLoss'
-SAVE_DIR: "/home/nuren.zhaksylyk/Documents/HC701/project/PEFormer/runs"
+SAVE_DIR: "/share/sda/nurenzhaksylyk/PEFormer/runs"
+DEVICE_NUM: 1
 
-CT_PK: "/home/kamila.zhumakhanova/Desktop/2_sem/hc_lab/project/data_nuren/all_ct_out_embeds.pickle"
-EHR_PK: "/home/kamila.zhumakhanova/Desktop/2_sem/hc_lab/project/data_nuren/all_emr_embs.pickle"
-CSV: "/home/kamila.zhumakhanova/Desktop/2_sem/hc_lab/project/data_nuren/all_ct_labels_split.csv"
+CT_PK: "/share/sda/nurenzhaksylyk/PEFormer/data/all_ct_out_embeds.pickle"
+EHR_PK: "/share/sda/nurenzhaksylyk/PEFormer/data/all_emr_embs.pickle"
+CSV: "/share/sda/nurenzhaksylyk/PEFormer/data/all_ct_labels_split.csv"

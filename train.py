@@ -2,7 +2,7 @@ from radfusion import RadFusionCT
 import torch
 from torch import nn
 from tqdm import tqdm
-from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score
+from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, roc_auc_score
 import os
 import numpy as np
 import pandas as pd
@@ -76,18 +76,18 @@ class PEFormer(nn.Module):
     def __init__(self, 
                  max_num_emb=110, 
                  emb_dim = 2048, 
-                 num_heads = 8,
-                 num_enc_layer = 6,
-                 num_dec_layer = 6,
+                 num_heads = 2,
+                 num_enc_layer = 1,
                  num_classes = 1,
-                 dim_feedforward = 2048):
+                 dim_feedforward = 512):
         super(PEFormer, self).__init__()
 
         self.positional_encoder = AbsolutePositionalEncoder(emb_dim, max_position=max_num_emb+1)
 
         self.cl_token = nn.Parameter(torch.randn(1, emb_dim))
 
-        self.transformer = nn.Transformer(d_model=emb_dim, nhead=num_heads, num_encoder_layers=num_enc_layer, num_decoder_layers=num_dec_layer, batch_first=True, dim_feedforward=dim_feedforward)
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dim, nhead=num_heads, dim_feedforward=dim_feedforward, batch_first=True)
+        self.transformer = nn.TransformerEncoder(self.encoder_layer, num_enc_layer)
 
         self.fc = nn.Linear(emb_dim, num_classes)
     
@@ -101,7 +101,7 @@ class PEFormer(nn.Module):
         #add False to the beginning of mask to account for CL token
         mask = torch.cat([torch.tensor([[False]]).expand(batch_size, 1).to(mask.device), mask], dim=1)
 
-        x = self.transformer(x, x, src_key_padding_mask = mask)
+        x = self.transformer(x, src_key_padding_mask = mask)
 
         x = self.fc(x[:, 0, :])
 
@@ -166,8 +166,10 @@ def train_step(
     train_acc = accuracy_score(targets, predictions)
     train_macro_f1 = f1_score(targets, predictions, average='macro')
     train_macro_recall = recall_score(targets, predictions, average='macro')
+    train_precision = precision_score(targets, predictions, average='macro')
+    train_auc = roc_auc_score(targets, predictions)
 
-    return train_loss, train_acc, train_macro_f1, train_macro_recall
+    return train_loss, train_acc, train_macro_f1, train_macro_recall, train_precision, train_auc
 
 def val_step(
         model: torch.nn.Module,
@@ -213,10 +215,60 @@ def val_step(
         val_acc = accuracy_score(val_targets, val_predictions)
         val_macro_f1 = f1_score(val_targets, val_predictions, average='macro')
         val_macro_recall = recall_score(val_targets, val_predictions, average='macro')
+        val_precision = precision_score(val_targets, val_predictions, average='macro')
+        val_auc = roc_auc_score(val_targets, val_predictions)
 
 
 
-    return val_loss, val_acc, val_macro_f1, val_macro_recall
+    return val_loss, val_acc, val_macro_f1, val_macro_recall, val_precision, val_auc
+
+
+def test_step(
+        model: torch.nn.Module,
+        test_loader,
+        loss_fn: torch.nn.Module,
+        device: torch.device,
+):
+    """
+    Evaluate model on test data.
+
+    Args:
+        model: PyTorch model to evaluate.
+        test_loader: PyTorch dataloader for test data.
+        loss_fn: PyTorch loss function.
+        device: PyTorch device to use for evaluation.
+
+    Returns:
+        Average loss, accuracy, macro F1 score, and macro recall for the test set.
+    """
+
+    model.eval()
+    test_loss = 0.0
+    test_targets = []
+    test_predictions = []
+
+    with torch.no_grad():
+        for i, (_, emb, mask, target) in enumerate(tqdm(test_loader)):
+            target = target.float()
+            emb, mask, target = emb.to(device), mask.to(device), target.to(device)
+            output = model(emb, mask)
+            output = output.squeeze(1)
+            loss = loss_fn(output, target)
+            test_loss += loss.item()
+
+            prediction = torch.sigmoid(output) > 0.5
+
+            test_predictions.extend(prediction.cpu().numpy())
+            test_targets.extend(target.cpu().numpy())
+
+        test_loss /= len(test_loader)
+        test_acc = accuracy_score(test_targets, test_predictions)
+        test_macro_f1 = f1_score(test_targets, test_predictions, average='macro')
+        test_macro_recall = recall_score(test_targets, test_predictions, average='macro')
+        test_precision = precision_score(test_targets, test_predictions, average='macro')
+        test_auc = roc_auc_score(test_targets, test_predictions)
+
+    return test_loss, test_acc, test_macro_f1, test_macro_recall, test_precision, test_auc
 
 def trainer(
         model: torch.nn.Module,
@@ -260,14 +312,19 @@ def trainer(
         "val_f1":[],
         "train_recall":[],
         "val_recall":[],
+        "train_precision":[],
+        "val_precision":[],
+        "train_auc":[],
+        "val_auc":[]
+
     }
     best_val_loss = 1e10
-
+    test_every = 2
     for epoch in range(start_epoch, epochs + 1):
 
         print(f"Epoch {epoch}:")
-        train_loss, train_acc, train_macro_f1, train_macro_recall = train_step(model, train_loader, loss_fn, optimizer, device, lr_scheduler, warmup_scheduler, warmup_period)
-        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Train F1: {train_macro_f1:.4f}, Train recall: {train_macro_recall:.4f}")
+        train_loss, train_acc, train_macro_f1, train_macro_recall, train_precision, train_auc = train_step(model, train_loader, loss_fn, optimizer, device, lr_scheduler, warmup_scheduler, warmup_period)
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Train F1: {train_macro_f1:.4f}, Train recall: {train_macro_recall:.4f}, Train precision: {train_precision:.4f}, Train AUC: {train_auc:.4f}")
 
         
 
@@ -275,12 +332,17 @@ def trainer(
         results["train_acc"].append(train_acc)
         results["train_f1"].append(train_macro_f1)
         results["train_recall"].append(train_macro_recall)
+        results["train_precision"].append(train_precision)
+        results["train_auc"].append(train_auc)
 
-
-        val_loss, val_acc, val_f1, val_recall = val_step(model, val_loader, loss_fn, device)
-        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}, Val recall: {val_recall:.4f}")
+        val_loss, val_acc, val_f1, val_recall, val_precision, val_auc = val_step(model, val_loader, loss_fn, device)
+        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}, Val recall: {val_recall:.4f}, Val precision: {val_precision:.4f}, Val AUC: {val_auc:.4f}")
         print()
 
+        if epoch % test_every == 0:
+            test_loss, test_acc, test_f1, test_recall, test_precision, test_auc = test_step(model, test_loader, loss_fn, device)
+            print(f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test F1: {test_f1:.4f}, Test recall: {test_recall:.4f}, Test precision: {test_precision:.4f}, Test AUC: {test_auc:.4f}")
+            print()
         # if lr_scheduler_name == "ReduceLROnPlateau":
         #     lr_scheduler.step(val_loss)
         # elif lr_scheduler_name != "None":
@@ -290,10 +352,16 @@ def trainer(
         results["val_acc"].append(val_acc)
         results["val_f1"].append(val_f1)
         results["val_recall"].append(val_recall)
-  
+        results["val_precision"].append(val_precision)
+        results["val_auc"].append(val_auc)
         
         
-        wandb.log({"train_loss": train_loss, "val_loss": val_loss, "train_acc": train_acc, "val_acc": val_acc, "train_f1": train_macro_f1, "train_recall": train_macro_recall, "val_f1": val_f1, "val_recall": val_recall})
+        wandb.log({"train_loss": train_loss, "val_loss": val_loss, 
+                   "train_acc": train_acc, "val_acc": val_acc, 
+                   "train_f1": train_macro_f1, "val_f1": val_f1,
+                   "train_recall": train_macro_recall, "val_recall": val_recall,
+                   "train_precision": train_precision, "val_precision": val_precision,
+                   "train_auc": train_auc, "val_auc": val_auc})
         
 
         checkpoint = { 
@@ -333,7 +401,8 @@ LOSS = config["LOSS"]
 SAVE_DIR = config["SAVE_DIR"]
 MIN_LR = float(config["MIN_LR"])
 WARMUP_EPOCH = int(config["WARMUP_EPOCH"])
-DEVICE = torch.device(f"cuda:0" if torch.cuda.is_available() else 'cpu')
+DEVICE_NUM = int(config["DEVICE_NUM"])
+DEVICE = torch.device(f"cuda:{DEVICE_NUM}" if torch.cuda.is_available() else 'cpu')
 
 print(f"Using {DEVICE} device")
 
@@ -416,7 +485,7 @@ model.load_state_dict(checkpoint['model'])
 model.to(DEVICE)
 torch.compile(model)
 
-test_loss, test_acc, test_f1, test_recall = val_step(model, test_loader, loss_fn=loss, device = DEVICE)
+test_loss, test_acc, test_f1, test_recall = test_step(model, test_loader, loss_fn=loss, device = DEVICE)
 print(test_loss, test_acc, test_f1, test_recall)
 config["test_acc"] = test_acc
 config["test_loss"] = test_loss
